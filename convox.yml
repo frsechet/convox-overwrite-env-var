@@ -1,0 +1,182 @@
+environment:
+  # common variables that must be defined
+  - DEBUG
+  - API_URL
+  - STAGE
+  - NPM_TOKEN
+  - SERVICE_SECRET
+  - AWS_REGION
+  - AWS_ACCOUNT_ID
+  - AWS_ACCESS_KEY_ID
+  - AWS_SECRET_ACCESS_KEY
+
+  # common defaults
+  - BLUEBIRD_W_FORGOTTEN_RETURN=0
+  - BUGSNAG_API_KEY=something
+
+  - NODE_ENV=${STAGE}
+
+  # resources and services
+  - REDIS_HOST
+  - REDIS_PORT=6379
+
+  - ELASTICSEARCH_HOST
+  - ELASTICSEARCH_INDEX=clevy:${STAGE}
+  - ELASTICSEARCH_INDEX_PREFIX=clevy:${STAGE}
+  - ELASTICSEARCH_PORT=443
+  - ELASTICSEARCH_REGION=${AWS_REGION}
+
+  - SQS_AWS_ACCOUNT_ID=${AWS_ACCOUNT_ID}
+  - SQS_REGION=${AWS_REGION}
+  - SQS_ENDPOINT=https://sqs.${AWS_REGION}.amazonaws.com
+  - SQS_QUEUE_PREFIX=clevy-${STAGE}
+
+services:
+  main:
+    build: .
+    domain: ${API_DOMAIN}
+    environment:
+      - APP_URL
+      - ITC_URL
+      - WEBAPP_URL
+      - JWT_SECRET
+      - CALLR_SECRET
+      - CRYPTR_SECRET
+      - SERVICE_SECRET
+      - CLOUDFRONT_KEYPAIR_ID
+      - CLOUDFRONT_PRIVATE_KEY
+      - WORKPLACE_VERIFY_TOKEN
+      - DB_HOST
+      - DB_DATABASE
+      - DB_USER
+      - DB_PASSWORD
+      - ASSETS_URL
+      - ASSETS_S3_BUCKET
+      - URL_SHORTENER_URL
+      - URL_SHORTENER_S3_BUCKET
+    links:
+      - nlpapi
+      - websockets
+    port: 3000
+    health:
+      grace: 30
+      path: /
+      interval: 30
+      timeout: 2
+    scale:
+      count: 3
+      memory: 2048
+      cpu: 0
+
+  websockets:
+    image: nginx
+    domain: ${WEBSOCKETS_DOMAIN}
+    port: 5000
+    sticky: true
+    environment:
+      - API_URL
+    health:
+      grace: 30
+      path: /
+      interval: 15
+      timeout: 2
+    scale:
+      count: 3
+      memory: 1024
+      cpu: 0
+
+  nlpapi:
+    image: nginx
+    port: 8001
+    internal: true
+    environment:
+      - VECTORIZER_DOMAIN
+      - VECTORIZER_FR_URL=https://fr.${VECTORIZER_DOMAIN}
+      - VECTORIZER_EN_URL=https://en.${VECTORIZER_DOMAIN}
+      - VECTORIZER_ES_URL=https://es.${VECTORIZER_DOMAIN}
+      - VECTORIZER_PT_URL=https://pt.${VECTORIZER_DOMAIN}
+    health:
+      # this container may take quite a while to boot.
+      # 60s is usually not enough, so 90s should work
+      grace: 90
+      path: /
+      interval: 30
+      timeout: 5
+    scale:
+      count: 3
+      memory: 2048
+      cpu: 0
+
+  cronjobs:
+    build: .
+    environment:
+      - APP_URL
+      - ITC_URL
+      - WEBAPP_URL
+      - JWT_SECRET
+      - CALLR_SECRET
+      - CRYPTR_SECRET
+      - SERVICE_SECRET
+      - CLOUDFRONT_KEYPAIR_ID
+      - CLOUDFRONT_PRIVATE_KEY
+      - WORKPLACE_VERIFY_TOKEN
+      - DB_HOST
+      - DB_DATABASE
+      - DB_USER
+      - DB_PASSWORD
+      - ASSETS_URL
+      - ASSETS_S3_BUCKET
+      - URL_SHORTENER_URL
+      - URL_SHORTENER_S3_BUCKET
+    links:
+      - nlpapi
+    scale:
+      count: 0
+      memory: 1024
+      cpu: 0
+
+  q-train-intent:
+    build: ./resources/queues
+    environment:
+      - QUEUE_NAME=train-intent
+    links:
+      - main # prefer using the local main URL
+    scale:
+      count: 3
+      memory: 256
+      cpu: 128
+
+  q-delete-intent:
+    build: ./resources/queues
+    environment:
+      - QUEUE_NAME=delete-intent
+    links:
+      - main # prefer using the local main URL
+    scale:
+      count: 1
+      memory: 256
+      cpu: 128
+
+
+
+timers:
+  # send digest emails to the coaches
+  coach-digest:
+    # every weekday morning at 6:30
+    schedule: "30 6 ? * MON-FRI *"
+    command: npm run cron:digest
+    service: cronjobs
+
+  # does our DB match what's in ElasticSearch?
+  db-consistency:
+    # every 15 minutes
+    schedule: "*/15 * * * ?"
+    command: npm run cron:db
+    service: cronjobs
+
+  # verify that the channel names have not been changed on the channel side
+  update-channel-names:
+    # every hour
+    schedule: "0 * * * ?"
+    command: npm run cron:channels
+    service: cronjobs
